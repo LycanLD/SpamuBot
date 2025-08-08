@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import sys
-
+version = "3.3"
 TOKEN = os.getenv("DISCORD_BOT_TOKEN") 
 
 intents = discord.Intents.default()
@@ -86,7 +86,7 @@ REPLY_THEME = """
 """
 
 async def update_status():
-    await client.change_presence(activity=discord.Game(name=f"Solved Cases: {solved_count}"))
+    await client.change_presence(activity=discord.Game(name=f"Ver: {version} | Solved Cases: {solved_count}"))
 
 @client.event
 async def on_ready():

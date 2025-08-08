@@ -11,7 +11,7 @@ COUNT_FILE = "solved_count.json"
 ENABLED_FLAG = "bot_enabled.flag"
 STATUS_FILE = "bot_status.txt"
 SESSION_TIMEOUT = 900  # 15 minutes
-
+VERSION = "3.3"
 def get_solved_count():
     if os.path.exists(COUNT_FILE):
         try:
@@ -167,7 +167,7 @@ PANEL_HTML = """
     </div>
   {% endif %}
   <div class="footer">
-    SpamuBot Control Panel &copy; 2024
+    SpamuBot v3.3 Control Panel &copy; 2025
   </div>
 </div>
 </body>
