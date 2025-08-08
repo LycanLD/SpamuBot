@@ -79,11 +79,17 @@ async def on_ready():
     print(f"✅ Logged in as {client.user}")
     await update_status()
 
+def is_bot_enabled():
+    return os.path.exists("bot_enabled.flag")
+
 @client.event
 async def on_message(message):
     global solved_count
 
     if message.author.bot:
+        return
+
+    if not is_bot_enabled():
         return
 
     content = message.content.lower()
