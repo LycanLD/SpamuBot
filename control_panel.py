@@ -167,7 +167,7 @@ PANEL_HTML = """
     </div>
   {% endif %}
   <div class="footer">
-    SpamuBot v3.3 HF1 Control Panel &copy; 2025
+    SpamuBot v3.3 HF2 Control Panel &copy; 2025
   </div>
 </div>
 </body>

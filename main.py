@@ -5,7 +5,7 @@ import os
 import threading
 import sys
 
-version = "3.3 HF1"
+version = "3.3 HF2"
 TOKEN = os.getenv("DISCORD_BOT_TOKEN") 
 
 intents = discord.Intents.default()
@@ -27,7 +27,8 @@ pattern_theme = re.compile(
 
 COUNT_FILE = "solved_count.json"
 ENABLED_FILE = "bot_enabled.flag"
-STATUS_FILE = "bot_status.txt"
+ACTIVITY_FILE = "bot_status.txt"
+USER_STATUS_FILE = "bot_user_status.txt"
 
 def load_solved_count():
     if os.path.exists(COUNT_FILE):
@@ -53,13 +54,23 @@ def set_bot_enabled(enabled: bool):
             os.remove(ENABLED_FILE)
 
 def load_custom_status():
-    if os.path.exists(STATUS_FILE):
-        with open(STATUS_FILE, "r", encoding="utf-8") as f:
+    if os.path.exists(ACTIVITY_FILE):
+        with open(ACTIVITY_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
     return ""
 
 def save_custom_status(text):
-    with open(STATUS_FILE, "w", encoding="utf-8") as f:
+    with open(ACTIVITY_FILE, "w", encoding="utf-8") as f:
+        f.write(text.strip())
+
+def load_user_status():
+    if os.path.exists(USER_STATUS_FILE):
+        with open(USER_STATUS_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return ""
+
+def save_user_status(text):
+    with open(USER_STATUS_FILE, "w", encoding="utf-8") as f:
         f.write(text.strip())
 
 solved_count = load_solved_count()
@@ -97,16 +108,24 @@ REPLY_THEME = """
 
 async def update_status():
     custom_status = load_custom_status()
-    # Discord supports multiline state in Activity (for some clients)
-    # Use \n to separate lines: 1st line = counter, 2nd line = version/custom status
-    state_lines = [f"Solved Cases: {solved_count}"]
+    user_status_text = load_user_status()
+    # Activity (multiline for counter + version/custom)
+    state_lines = [f"Solved Cases: {solved_count} | {user_status_text}"]
     if custom_status:
         state_lines.append(custom_status)
     else:
         state_lines.append(f"Ver: {version}")
     state = "\n".join(state_lines)
     activity = discord.Activity(type=discord.ActivityType.playing, name=state)
-    await client.change_presence(activity=activity)
+    status_map = {
+        "online": discord.Status.online,
+        "idle": discord.Status.idle,
+        "dnd": discord.Status.dnd,
+        "invisible": discord.Status.invisible
+    }
+    # If user_status_text is a known status, use it, else default to online
+    presence_status = status_map.get(user_status_text.lower(), discord.Status.online)
+    await client.change_presence(status=presence_status, activity=activity)
 
 @client.event
 async def on_ready():
@@ -160,6 +179,7 @@ def get_bot_status():
         "enabled": is_bot_enabled(),
         "solved_count": solved_count,
         "custom_status": load_custom_status(),
+        "user_status": load_user_status(),
         "username": str(client.user) if client.user else None
     }
 
@@ -170,6 +190,9 @@ def set_solved_count(new_count):
 
 def set_custom_status(new_status):
     save_custom_status(new_status)
+
+def set_user_status(new_status):
+    save_user_status(new_status)
 
 def restart_bot():
     os.execv(__file__, ['python'] + sys.argv)
@@ -195,6 +218,16 @@ def dashboard_set_solved_count(new_count: int):
 
 def dashboard_set_custom_status(new_status: str):
     set_custom_status(new_status)
+    # Update status immediately
+    coro = update_status()
+    try:
+        import asyncio
+        asyncio.run_coroutine_threadsafe(coro, client.loop)
+    except Exception:
+        pass
+
+def dashboard_set_user_status(new_status: str):
+    set_user_status(new_status)
     # Update status immediately
     coro = update_status()
     try:
