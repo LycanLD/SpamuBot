@@ -1,13 +1,15 @@
 import os
 import time
 import json
-from flask import Flask, request, render_template_string, redirect, url_for, session, abort
+from flask import Flask, request, render_template_string, redirect, url_for, session, abort, jsonify
+import threading
 
 app = Flask(__name__)
 app.secret_key = os.getenv("CONTROL_PANEL_SECRET", "default_secret")
 PASSWORD = os.getenv("CONTROL_PANEL_PASSWORD")
 COUNT_FILE = "solved_count.json"
 ENABLED_FLAG = "bot_enabled.flag"
+STATUS_FILE = "bot_status.txt"
 SESSION_TIMEOUT = 900  # 15 minutes
 
 def get_solved_count():
@@ -34,6 +36,16 @@ def set_bot_enabled(enabled: bool):
         if os.path.exists(ENABLED_FLAG):
             os.remove(ENABLED_FLAG)
 
+def get_bot_status_text():
+    if os.path.exists(STATUS_FILE):
+        with open(STATUS_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return ""
+
+def set_bot_status_text(text):
+    with open(STATUS_FILE, "w", encoding="utf-8") as f:
+        f.write(text.strip())
+
 def csrf_token():
     if "csrf_token" not in session:
         import secrets
@@ -55,6 +67,19 @@ def check_session_timeout():
     session["last_active"] = now
     return True
 
+def get_bot_status():
+    return {
+        "enabled": is_bot_enabled(),
+        "solved_count": get_solved_count(),
+        "custom_status": get_bot_status_text()
+    }
+
+def dashboard_restart():
+    os._exit(100)  # Supervisor should restart the process
+
+def dashboard_shutdown():
+    os._exit(0)
+
 PANEL_HTML = """
 <!doctype html>
 <html lang="en">
@@ -75,6 +100,8 @@ PANEL_HTML = """
     .status-disabled { color: #c33; font-weight: bold; }
     .footer { margin-top: 2em; color: #888; font-size: 0.9em; text-align: center; }
     .error { color: #c33; }
+    .status-edit { margin-top: 1em; }
+    input[type="text"] { width: 90%; padding: 0.4em; }
   </style>
 </head>
 <body>
@@ -97,6 +124,8 @@ PANEL_HTML = """
       {% endif %}
       <br>
       <b>Solved Counter:</b> <span>{{ solved_count }}</span>
+      <br>
+      <b>Custom Status:</b> <span>{{ custom_status or "(not set)" }}</span>
     </div>
     <div class="actions">
       <form method="post" action="{{ url_for('enable_bot') }}">
@@ -111,6 +140,10 @@ PANEL_HTML = """
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" onclick="return confirm('Reset solved counter?')">Reset Solved Counter</button>
       </form>
+      <form method="post" action="{{ url_for('restart') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Restart Bot</button>
+      </form>
       <form method="post" action="{{ url_for('shutdown') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="danger" onclick="return confirm('Shutdown bot?')">Shutdown Bot</button>
@@ -118,6 +151,18 @@ PANEL_HTML = """
       <form method="post" action="{{ url_for('logout') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="logout">Logout</button>
+      </form>
+    </div>
+    <div class="status-edit">
+      <form method="post" action="{{ url_for('edit_status') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="text" name="custom_status" value="{{ custom_status }}" maxlength="100" placeholder="Set custom status...">
+        <button type="submit">Update Status</button>
+      </form>
+      <form method="post" action="{{ url_for('set_counter') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="number" name="solved_count" min="0" value="{{ solved_count }}">
+        <button type="submit">Set Solved Counter</button>
       </form>
     </div>
   {% endif %}
@@ -149,7 +194,8 @@ def index():
             error = "Incorrect password."
     solved_count = get_solved_count() if session.get("logged_in") else None
     bot_enabled = is_bot_enabled() if session.get("logged_in") else None
-    return render_template_string(PANEL_HTML, error=error, solved_count=solved_count, bot_enabled=bot_enabled, csrf_token=csrf_token())
+    custom_status = get_bot_status_text() if session.get("logged_in") else None
+    return render_template_string(PANEL_HTML, error=error, solved_count=solved_count, bot_enabled=bot_enabled, csrf_token=csrf_token(), custom_status=custom_status)
 
 @app.route("/enable_bot", methods=["POST"])
 def enable_bot():
@@ -175,6 +221,36 @@ def reset_counter():
     reset_solved_count()
     return redirect(url_for("index"))
 
+@app.route("/set_counter", methods=["POST"])
+def set_counter():
+    if not session.get("logged_in"):
+        return redirect(url_for("index"))
+    check_csrf()
+    try:
+        count = int(request.form.get("solved_count", 0))
+        with open(COUNT_FILE, "w") as f:
+            json.dump({"count": count}, f)
+    except Exception:
+        pass
+    return redirect(url_for("index"))
+
+@app.route("/edit_status", methods=["POST"])
+def edit_status():
+    if not session.get("logged_in"):
+        return redirect(url_for("index"))
+    check_csrf()
+    status = request.form.get("custom_status", "")
+    set_bot_status_text(status)
+    return redirect(url_for("index"))
+
+@app.route("/restart", methods=["POST"])
+def restart():
+    if not session.get("logged_in"):
+        return redirect(url_for("index"))
+    check_csrf()
+    threading.Thread(target=dashboard_restart, daemon=True).start()
+    return "Restarting...", 200
+
 @app.route("/shutdown", methods=["POST"])
 def shutdown():
     if not session.get("logged_in"):
@@ -187,6 +263,48 @@ def logout():
     check_csrf()
     session.clear()
     return redirect(url_for("index"))
+
+@app.route("/api/status", methods=["GET"])
+def api_status():
+    return jsonify(get_bot_status())
+
+@app.route("/api/enabled", methods=["GET", "POST"])
+def api_enabled():
+    if request.method == "GET":
+        return jsonify({"enabled": is_bot_enabled()})
+    elif request.method == "POST":
+        enabled = request.json.get("enabled", True)
+        set_bot_enabled(bool(enabled))
+        return jsonify({"enabled": is_bot_enabled()})
+
+@app.route("/api/solved_count", methods=["GET", "POST"])
+def api_solved_count():
+    if request.method == "GET":
+        return jsonify({"solved_count": get_solved_count()})
+    elif request.method == "POST":
+        count = int(request.json.get("solved_count", 0))
+        with open(COUNT_FILE, "w") as f:
+            json.dump({"count": count}, f)
+        return jsonify({"solved_count": get_solved_count()})
+
+@app.route("/api/custom_status", methods=["GET", "POST"])
+def api_custom_status():
+    if request.method == "GET":
+        return jsonify({"custom_status": get_bot_status_text()})
+    elif request.method == "POST":
+        status = request.json.get("custom_status", "")
+        set_bot_status_text(status)
+        return jsonify({"custom_status": get_bot_status_text()})
+
+@app.route("/api/restart", methods=["POST"])
+def api_restart():
+    threading.Thread(target=dashboard_restart, daemon=True).start()
+    return jsonify({"status": "restarting"})
+
+@app.route("/api/shutdown", methods=["POST"])
+def api_shutdown():
+    threading.Thread(target=dashboard_shutdown, daemon=True).start()
+    return jsonify({"status": "shutting down"})
 
 def start_control_panel():
     app.run(host="0.0.0.0", port=5000)
