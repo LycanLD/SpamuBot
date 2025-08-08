@@ -112,4 +112,9 @@ async def on_message(message):
             await message.channel.send(f"{message.author.mention} I can't DM you — please enable DMs.")
         return
 
-client.run(TOKEN)
+if __name__ == "__main__":
+    # Start Flask control panel in a separate thread
+    from control_panel import start_control_panel
+    import threading
+    threading.Thread(target=start_control_panel, daemon=True).start()
+    client.run(TOKEN)
