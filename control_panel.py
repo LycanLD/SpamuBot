@@ -1,15 +1,18 @@
 import os
-from flask import Flask, request, render_template_string, redirect, url_for, session
+import time
+import json
+from flask import Flask, request, render_template_string, redirect, url_for, session, abort
 
 app = Flask(__name__)
 app.secret_key = os.getenv("CONTROL_PANEL_SECRET", "default_secret")
 PASSWORD = os.getenv("CONTROL_PANEL_PASSWORD")
 COUNT_FILE = "solved_count.json"
+ENABLED_FLAG = "bot_enabled.flag"
+SESSION_TIMEOUT = 900  # 15 minutes
 
 def get_solved_count():
     if os.path.exists(COUNT_FILE):
         try:
-            import json
             with open(COUNT_FILE, "r") as f:
                 return json.load(f).get("count", 0)
         except Exception:
@@ -17,55 +20,158 @@ def get_solved_count():
     return 0
 
 def reset_solved_count():
-    import json
     with open(COUNT_FILE, "w") as f:
         json.dump({"count": 0}, f)
 
+def is_bot_enabled():
+    return os.path.exists(ENABLED_FLAG)
+
+def set_bot_enabled(enabled: bool):
+    if enabled:
+        with open(ENABLED_FLAG, "w") as f:
+            f.write("enabled")
+    else:
+        if os.path.exists(ENABLED_FLAG):
+            os.remove(ENABLED_FLAG)
+
+def csrf_token():
+    if "csrf_token" not in session:
+        import secrets
+        session["csrf_token"] = secrets.token_hex(16)
+    return session["csrf_token"]
+
+def check_csrf():
+    token = session.get("csrf_token")
+    form_token = request.form.get("csrf_token")
+    if not token or not form_token or token != form_token:
+        abort(400, "CSRF token mismatch")
+
+def check_session_timeout():
+    now = int(time.time())
+    last = session.get("last_active", now)
+    if now - last > SESSION_TIMEOUT:
+        session.clear()
+        return False
+    session["last_active"] = now
+    return True
+
 PANEL_HTML = """
 <!doctype html>
-<title>SpamuBot Control Panel</title>
-<h2>SpamuBot Control Panel</h2>
-{% if not session.get('logged_in') %}
-  <form method="post">
-    <input type="password" name="password" placeholder="Password" autofocus>
-    <input type="submit" value="Login">
-    {% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
-  </form>
-{% else %}
-  <p>Welcome to the control panel!</p>
-  <h3>Bot Info</h3>
-  <ul>
-    <li>Solved Counter: <b>{{ solved_count }}</b></li>
-  </ul>
-  <h3>Actions</h3>
-  <form method="post" action="{{ url_for('reset_counter') }}">
-    <button type="submit" onclick="return confirm('Reset solved counter?')">Reset Solved Counter</button>
-  </form>
-  <form method="post" action="{{ url_for('shutdown') }}">
-    <button type="submit" style="color:red;" onclick="return confirm('Shutdown bot?')">Shutdown Bot</button>
-  </form>
-  <form method="post" action="{{ url_for('logout') }}">
-    <button type="submit">Logout</button>
-  </form>
-{% endif %}
+<html lang="en">
+<head>
+  <title>SpamuBot Control Panel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; background: #f7f7fa; margin: 0; padding: 0; }
+    .panel { max-width: 420px; margin: 40px auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px #0001; padding: 2em; }
+    h2 { margin-top: 0; }
+    .info { background: #eef; padding: 1em; border-radius: 5px; margin-bottom: 1em; }
+    .actions form { display: inline-block; margin: 0.5em 0.5em 0.5em 0; }
+    button { padding: 0.5em 1.2em; border-radius: 4px; border: none; background: #3a7; color: #fff; font-weight: bold; cursor: pointer; }
+    button[disabled] { background: #aaa; }
+    .danger { background: #c33; }
+    .logout { background: #888; }
+    .status-enabled { color: #080; font-weight: bold; }
+    .status-disabled { color: #c33; font-weight: bold; }
+    .footer { margin-top: 2em; color: #888; font-size: 0.9em; text-align: center; }
+    .error { color: #c33; }
+  </style>
+</head>
+<body>
+<div class="panel">
+  <h2>SpamuBot Control Panel</h2>
+  {% if not session.get('logged_in') %}
+    <form method="post">
+      <input type="password" name="password" placeholder="Password" autofocus>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="submit" value="Login">
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    </form>
+  {% else %}
+    <div class="info">
+      <b>Bot Status:</b>
+      {% if bot_enabled %}
+        <span class="status-enabled">ENABLED</span>
+      {% else %}
+        <span class="status-disabled">DISABLED</span>
+      {% endif %}
+      <br>
+      <b>Solved Counter:</b> <span>{{ solved_count }}</span>
+    </div>
+    <div class="actions">
+      <form method="post" action="{{ url_for('enable_bot') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" {% if bot_enabled %}disabled{% endif %}>Enable Bot</button>
+      </form>
+      <form method="post" action="{{ url_for('disable_bot') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" {% if not bot_enabled %}disabled{% endif %}>Disable Bot</button>
+      </form>
+      <form method="post" action="{{ url_for('reset_counter') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" onclick="return confirm('Reset solved counter?')">Reset Solved Counter</button>
+      </form>
+      <form method="post" action="{{ url_for('shutdown') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="danger" onclick="return confirm('Shutdown bot?')">Shutdown Bot</button>
+      </form>
+      <form method="post" action="{{ url_for('logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="logout">Logout</button>
+      </form>
+    </div>
+  {% endif %}
+  <div class="footer">
+    SpamuBot Control Panel &copy; 2024
+  </div>
+</div>
+</body>
+</html>
 """
+
+@app.before_request
+def before_request():
+    if session.get("logged_in"):
+        if not check_session_timeout():
+            return redirect(url_for("logout"))
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     error = None
     if request.method == "POST":
+        check_csrf()
         if request.form.get("password") == PASSWORD:
             session["logged_in"] = True
+            session["last_active"] = int(time.time())
+            csrf_token()  # ensure token is set
             return redirect(url_for("index"))
         else:
             error = "Incorrect password."
     solved_count = get_solved_count() if session.get("logged_in") else None
-    return render_template_string(PANEL_HTML, error=error, solved_count=solved_count)
+    bot_enabled = is_bot_enabled() if session.get("logged_in") else None
+    return render_template_string(PANEL_HTML, error=error, solved_count=solved_count, bot_enabled=bot_enabled, csrf_token=csrf_token())
+
+@app.route("/enable_bot", methods=["POST"])
+def enable_bot():
+    if not session.get("logged_in"):
+        return redirect(url_for("index"))
+    check_csrf()
+    set_bot_enabled(True)
+    return redirect(url_for("index"))
+
+@app.route("/disable_bot", methods=["POST"])
+def disable_bot():
+    if not session.get("logged_in"):
+        return redirect(url_for("index"))
+    check_csrf()
+    set_bot_enabled(False)
+    return redirect(url_for("index"))
 
 @app.route("/reset_counter", methods=["POST"])
 def reset_counter():
     if not session.get("logged_in"):
         return redirect(url_for("index"))
+    check_csrf()
     reset_solved_count()
     return redirect(url_for("index"))
 
@@ -73,11 +179,13 @@ def reset_counter():
 def shutdown():
     if not session.get("logged_in"):
         return redirect(url_for("index"))
+    check_csrf()
     os._exit(0)
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    session.pop("logged_in", None)
+    check_csrf()
+    session.clear()
     return redirect(url_for("index"))
 
 def start_control_panel():
