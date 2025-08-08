@@ -3,6 +3,7 @@ import re
 import json
 import os
 import threading
+import sys
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN") 
 
